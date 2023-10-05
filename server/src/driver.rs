@@ -57,19 +57,15 @@ impl WebRtcDriver {
             // Poll client states until they all are at an idle state.
             // TODO: Avoid re-polling idle clients
 
-            let total = self.conns.len();
-            let mut timeouts = Vec::with_capacity(total);
+            let mut timeouts = Vec::with_capacity(self.conns.len());
             for mut client in self.conns.iter_mut() {
-                match client.handle_output(&self.socket, &self.conn_tx).await {
-                    Ok(Some(t)) => {
-                        timeouts.push(t);
-                    }
-                    Ok(None) => {}
-                    Err(e) => error!("Failed to poll output: {e}"),
+                match client
+                    .handle_until_timeout(&self.socket, &self.conn_tx)
+                    .await
+                {
+                    Ok(t) => timeouts.push(t),
+                    Err(e) => error!("failed to handle rtc connection state: {e}"),
                 }
-            }
-            if timeouts.len() != total {
-                continue;
             }
 
             let timeout = timeouts
@@ -85,20 +81,9 @@ impl WebRtcDriver {
             match tokio::time::timeout(timeout, self.socket.recv_from(buf)).await {
                 Ok(Ok((n, source))) => {
                     info!("read in {:?}", now.elapsed());
-                    // Try and get the rtc instance for this address, and handle its input
-                    if let Some(mut client) = self.conns.get_mut(&source.ip()) {
-                        info!("handling input");
-                        if let Err(e) = client.rtc.handle_input(Input::Receive(
-                            Instant::now(),
-                            Receive {
-                                source,
-                                destination: self.socket.local_addr().unwrap(),
-                                contents: buf[..n].try_into().unwrap(),
-                            },
-                        )) {
-                            warn!("failed to handle client input: {e}");
-                        };
-                    };
+                    if let Err(e) = self.handle_input(source, &buf[..n]) {
+                        error!("failed to handle socket input: {e}");
+                    }
                 }
                 Ok(Err(e)) => {
                     error!("Failed to read from udp socket: {e}");
@@ -115,6 +100,25 @@ impl WebRtcDriver {
                 }
             }
         }
+    }
+
+    fn handle_input(&self, source: SocketAddr, buffer: &[u8]) -> Result<()> {
+        // Try and get the rtc instance for this address, and handle its input
+        if let Some(mut client) = self.conns.get_mut(&source.ip()) {
+            info!("handling input");
+            if let Err(e) = client.rtc.handle_input(Input::Receive(
+                Instant::now(),
+                Receive {
+                    source,
+                    destination: self.socket.local_addr().unwrap(),
+                    contents: buffer.try_into().unwrap(),
+                },
+            )) {
+                warn!("failed to handle client input: {e}");
+            };
+        };
+
+        Ok(())
     }
 }
 
@@ -138,6 +142,19 @@ impl Connection {
             rtc,
             addr,
             state: ConnectionState::AwaitingDataChannel,
+        }
+    }
+
+    async fn handle_until_timeout(
+        &mut self,
+        socket: &UdpSocket,
+        conn_tx: &Sender<(HandshakeRequestFrame, IpAddr, Receiver<RequestFrame>)>,
+    ) -> Result<Instant> {
+        loop {
+            match self.handle_output(socket, conn_tx).await? {
+                Some(t) => return Ok(t),
+                None => continue,
+            }
         }
     }
 
