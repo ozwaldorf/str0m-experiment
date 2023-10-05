@@ -1,0 +1,21 @@
+[package]
+name = "str0m-experiment"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+log = "0.4"
+simple_logger = "4.2"
+str0m = "0.2"
+# str0m = { path = "./str0m" }
+axum = "0.6"
+tower-http = { version = "0.4.4", features = ["cors"] }
+arrayref = "0.3"
+bytes = "1.5"
+tokio = { version = "1.32", features = ["full"] }
+triomphe = "0.1"
+dashmap = "5.5"
+
+lightning-types = { git = "https://github.com/fleek-network/lightning" }
+fleek-crypto = { git = "https://github.com/fleek-network/lightning" }
