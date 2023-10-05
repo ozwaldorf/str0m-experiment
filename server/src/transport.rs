@@ -8,7 +8,7 @@ use triomphe::Arc;
 
 use anyhow::Result;
 use dashmap::DashMap;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::{mpsc::{channel, Receiver, Sender}, Notify};
 
 use crate::{
     driver::{ConnectionMap, WebRtcDriver},
@@ -23,6 +23,7 @@ pub struct WebRtcTransport {
     conn_rx: Receiver<(HandshakeRequestFrame, IpAddr, Receiver<RequestFrame>)>,
     /// Shared map of connections
     conns: ConnectionMap,
+    waker: Arc<Notify>
 }
 
 impl WebRtcTransport {
@@ -44,9 +45,11 @@ impl WebRtcTransport {
                 .expect("Failed to setup server");
         });
 
-        tokio::spawn(driver.run());
+        let waker = Arc::new(Notify::new());
 
-        Ok(Self { conn_rx, conns })
+        tokio::spawn(driver.run(waker.clone()));
+
+        Ok(Self { conn_rx, conns, waker })
     }
 
     pub async fn accept(
@@ -57,6 +60,7 @@ impl WebRtcTransport {
         let sender = WebRtcSender {
             addr,
             conns: self.conns.clone(),
+            waker: self.waker.clone()
         };
         let receiver = WebRtcReceiver(receiver);
 
@@ -68,6 +72,7 @@ impl WebRtcTransport {
 pub struct WebRtcSender {
     addr: IpAddr,
     conns: ConnectionMap,
+    waker: Arc<Notify>
 }
 
 macro_rules! webrtc_send {
@@ -76,6 +81,7 @@ macro_rules! webrtc_send {
             if let Err(e) = conn.write($payload) {
                 warn!("failed to write outgoing payload to rtc instance: {e}");
             }
+            $self.waker.notify_one();
         }
     };
 }

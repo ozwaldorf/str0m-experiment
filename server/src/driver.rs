@@ -8,7 +8,9 @@ use str0m::channel::ChannelId;
 use str0m::net::{Receive, Transmit};
 use str0m::{Event, IceConnectionState, Input, Output, Rtc};
 use tokio::net::UdpSocket;
+use tokio::select;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::Notify;
 
 use triomphe::Arc;
 
@@ -46,7 +48,7 @@ impl WebRtcDriver {
         })
     }
 
-    pub async fn run(self) {
+    pub async fn run(self, waker: Arc<Notify>) {
         // UDP datagrams should be ~2KB max
         let buf = &mut [0; 2 << 10];
 
@@ -76,21 +78,22 @@ impl WebRtcDriver {
                 .max(Duration::from_millis(1));
 
             let now = Instant::now();
-
-            // Read incoming data from the socket
-            match tokio::time::timeout(timeout, self.socket.recv_from(buf)).await {
-                Ok(Ok((n, source))) => {
-                    info!("read in {:?}", now.elapsed());
-                    if let Err(e) = self.handle_input(source, &buf[..n]) {
-                        error!("failed to handle socket input: {e}");
+            select! {
+                // Read incoming data from the socket
+                res = self.socket.recv_from(buf) => match res {
+                    Ok((n, source)) => {
+                        info!("read in {:?}", now.elapsed());
+                        if let Err(e) = self.handle_input(source, &buf[..n]) {
+                            error!("failed to handle socket input: {e}");
+                        }
                     }
-                }
-                Ok(Err(e)) => {
-                    error!("Failed to read from udp socket: {e}");
-                }
-                // timeout
-                Err(_) => {}
-            };
+                    Err(_) => {}
+                },
+                // Waker, which is called after rtc.write()
+                _ = waker.notified() => {},
+                // Read timeout
+                _ = tokio::time::sleep(timeout) => {}
+            }
 
             // Drive time forward in all clients.
             let now = Instant::now();
